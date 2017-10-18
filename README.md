@@ -1,5 +1,7 @@
 # socket.io-adapter-mongo (WIP)
 
+[![Build Status](https://travis-ci.org/mother/socket.io-adapter-mongo.svg?branch=master)](https://travis-ci.org/mother/socket.io-adapter-mongo)
+
 ## How to use
 
 ```js
