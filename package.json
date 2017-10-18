@@ -1,0 +1,30 @@
+{
+  "name": "socket.io-adapter-mongo",
+  "version": "0.0.1",
+  "description": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:mother/socket.io-adapter-mongo.git"
+  },
+  "files": [
+    "index.js"
+  ],
+  "scripts": {
+    "test": "mocha"
+  },
+  "dependencies": {
+    "debug": "~2.6.8",
+    "mongoose": "~4.12.3",
+    "notepack.io": "~2.1.2",
+    "socket.io-adapter": "~1.1.0",
+    "uid2": "0.0.3"
+  },
+  "devDependencies": {
+    "expect.js": "0.3.1",
+    "mocha": "^3.4.2",
+    "mockgoose": "7.3.3",
+    "socket.io": "latest",
+    "socket.io-client": "latest"
+  }
+}
