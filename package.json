@@ -1,6 +1,6 @@
 {
   "name": "socket.io-adapter-mongo",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "",
   "license": "MIT",
   "repository": {
@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "debug": "~2.6.8",
-    "mongoose": "~4.12.3",
+    "mongoose": "5.0.16",
     "notepack.io": "~2.1.2",
     "socket.io-adapter": "~1.1.0",
     "uid2": "0.0.3"
@@ -24,7 +24,7 @@
     "expect.js": "0.3.1",
     "mocha": "^3.4.2",
     "mockgoose": "7.3.3",
-    "socket.io": "latest",
-    "socket.io-client": "latest"
+    "socket.io": "2.1.0",
+    "socket.io-client": "2.1.0"
   }
 }

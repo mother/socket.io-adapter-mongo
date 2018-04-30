@@ -4,88 +4,36 @@ const debug = require('debug')('socket.io-mongo-adapter')
 const msgpack = require('notepack.io')
 const uid2 = require('uid2')
 
-/**
- * Module exports.
- */
-
-module.exports = adapter
-
 const collectionNames = []
 
-/**
- * Returns a MongoAdapter class.
- *
- * @return {MongoAdapter} adapter
- * @api public
- */
+class MongoAdapter extends Adapter {
+   constructor(options = {}, namespace) {
+      super(namespace)
 
-function adapter(uriArg, optionsArg = {}) {
-   const options = typeof uriArg === 'object'
-      ? uriArg
-      : optionsArg
-
-   const uri = typeof uriArg === 'object'
-      ? null
-      : uriArg
-
-   const prefix = options.key || 'socket.io'
-   const requestsTimeout = options.requestsTimeout || 5000
-
-   const collectionName = options.collectionName || 'socket.io-message-queue'
-   const collectionSize = options.collectionSize || 1000000 // 1MB
-   const mongoose = options.mongoose || new Mongoose().connect(uri)
-
-   // this server's key
-   const uid = uid2(6)
-
-   // Message Schema & Model
-   let Message
-   if (collectionNames.includes(collectionName)) {
-      Message = mongoose.model(collectionName)
-   } else {
-      const messageSchema = new mongoose.Schema({
-         channel: { type: String, trim: true },
-         msg: { type: Buffer }
-      }, {
-         capped: collectionSize
-      })
-
-      Message = mongoose.model(collectionName, messageSchema)
-      collectionNames.push(collectionName)
-   }
-
-   /**
-    * Adapter constructor.
-    *
-    * @param {String} namespace name
-    * @api public
-    */
-
-   function MongoAdapter(nsp) {
-      Adapter.call(this, nsp)
-
-      this.uid = uid
-      this.prefix = prefix
+      this.uid = uid2(6)
+      this.prefix = options.prefix || 'socket.io'
+      this.channel = `${this.prefix}#${namespace.name}#`
+      this.model = options.model
       // this.requestsTimeout = requestsTimeout
-      this.channel = `${prefix}#${nsp.name}#`
 
-      this.channelMatches = (messageChannel, subscribedChannel) => (
-         messageChannel.startsWith(subscribedChannel)
-      )
-
-      Message.count({})
+      this.model.count({})
       .then((count) => {
          if (count === 0) {
-            return Message.create({
+            return this.model.create({
                channel: 'placeholder',
                msg: new Buffer('placeholder')
             })
          }
       })
       .then(() => {
-         const cursor = Message
-         .find({})
-         .tailable()
+         return this.model.find({}).lean().select('_id').sort({ $natural: -1 }).limit(1)
+         .then(latestDoc => Promise.resolve(latestDoc[0]._id))
+      })
+      .then((latestId) => {
+         const cursor = this.model
+         .find({ _id: { $gt: latestId } })
+         .limit(1)
+         .tailable({ awaitdata: true, numberOfRetries: -1 })
          .cursor()
 
          cursor.on('data', this.onmessage.bind(this))
@@ -99,22 +47,13 @@ function adapter(uriArg, optionsArg = {}) {
       ))
    }
 
-   /**
-    * Inherits from `Adapter`.
-    */
+   channelMatches (messageChannel, subscribedChannel) {
+      return messageChannel.startsWith(subscribedChannel)
+   }
 
-   // eslint-disable-next-line no-proto
-   MongoAdapter.prototype.__proto__ = Adapter.prototype
-
-   /**
-    * Called with a subscription message
-    *
-    * @api private
-    */
-
-   MongoAdapter.prototype.onmessage = function (record) {
+   // Private
+   onmessage (record) {
       const channel = record.channel
-
       if (!this.channelMatches(channel, this.channel)) {
          return debug('ignore different channel')
       }
@@ -127,7 +66,7 @@ function adapter(uriArg, optionsArg = {}) {
       const msg = record.msg
       const args = msgpack.decode(msg)
 
-      if (uid === args.shift()) {
+      if (this.uid === args.shift()) {
          return debug('ignore same uid')
       }
 
@@ -155,11 +94,11 @@ function adapter(uriArg, optionsArg = {}) {
     * @api public
     */
 
-   MongoAdapter.prototype.broadcast = function (packet, opts, remote) {
+   broadcast (packet, opts, remote) {
       packet.nsp = this.nsp.name
 
       if (!(remote || (opts && opts.flags && opts.flags.local))) {
-         const msg = msgpack.encode([uid, packet, opts])
+         const msg = msgpack.encode([this.uid, packet, opts])
          let channel = this.channel
          if (opts.rooms && opts.rooms.length === 1) {
             const room = opts.rooms[0]
@@ -167,12 +106,14 @@ function adapter(uriArg, optionsArg = {}) {
          }
 
          debug('publishing message to channel %s', channel)
-         Message.create({ channel, msg }, (err) => {
-            debug(err)
+         this.model.create({ channel, msg }, (err) => {
+            if (err) {
+               debug('Error creating message', err)
+            }
          })
       }
 
-      Adapter.prototype.broadcast.call(this, packet, opts)
+      super.broadcast(packet, opts)
    }
 
    /**
@@ -183,7 +124,7 @@ function adapter(uriArg, optionsArg = {}) {
     * @api public
     */
 
-   MongoAdapter.prototype.clients = function (rooms, fn) {
+   clients (rooms, fn) {
 
    }
 
@@ -195,7 +136,7 @@ function adapter(uriArg, optionsArg = {}) {
     * @api public
     */
 
-   MongoAdapter.prototype.clientRooms = function (id, fn) {
+   clientRooms (id, fn) {
 
    }
 
@@ -206,7 +147,7 @@ function adapter(uriArg, optionsArg = {}) {
     * @api public
     */
 
-   MongoAdapter.prototype.allRooms = function (fn) {
+   allRooms (fn) {
 
    }
 
@@ -219,7 +160,7 @@ function adapter(uriArg, optionsArg = {}) {
     * @api public
     */
 
-   MongoAdapter.prototype.remoteJoin = function (id, room, fn) {
+   remoteJoin (id, room, fn) {
 
    }
 
@@ -232,7 +173,7 @@ function adapter(uriArg, optionsArg = {}) {
     * @api public
     */
 
-   MongoAdapter.prototype.remoteLeave = function (id, room, fn) {
+   remoteLeave (id, room, fn) {
 
    }
 
@@ -244,7 +185,7 @@ function adapter(uriArg, optionsArg = {}) {
     * @api public
     */
 
-   MongoAdapter.prototype.remoteDisconnect = function (id, close, fn) {
+   remoteDisconnect (id, close, fn) {
 
    }
 
@@ -256,14 +197,48 @@ function adapter(uriArg, optionsArg = {}) {
     * @api public
     */
 
-   MongoAdapter.prototype.customRequest = function (data, fn) {
+   customRequest (data, fn) {
 
    }
+}
 
-   MongoAdapter.mongoose = mongoose
-   // MongoAdapter.uid = uid
-   // MongoAdapter.prefix = prefix
-   // MongoAdapter.requestsTimeout = requestsTimeout
+/**
+ * Returns a MongoAdapter class.
+ *
+ * @return {MongoAdapter} adapter
+ * @api public
+ */
+module.exports = function adapter(uriArg, optionsArg = {}) {
+   const options = typeof uriArg === 'object'
+      ? uriArg
+      : optionsArg
 
-   return MongoAdapter
+   const uri = typeof uriArg === 'object'
+      ? null
+      : uriArg
+
+   const prefix = options.key || 'socket.io'
+   const requestsTimeout = options.requestsTimeout || 5000
+
+   const collectionName = options.collectionName || 'socket.io-message-queue'
+   const collectionSize = options.collectionSize || 1000000 // 1MB
+   const mongoose = options.mongoose || new Mongoose().connect(uri)
+
+   // Message Schema & Model
+   let Message
+   if (collectionNames.includes(collectionName)) {
+      Message = mongoose.model(collectionName)
+   } else {
+      const messageSchema = new mongoose.Schema({
+         channel: { type: String, trim: true },
+         msg: { type: Buffer }
+      }, {
+         capped: collectionSize
+      })
+
+      Message = mongoose.model(collectionName, messageSchema)
+      collectionNames.push(collectionName)
+   }
+
+   return MongoAdapter.bind(null, { model: Message, prefix })
 }
