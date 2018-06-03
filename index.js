@@ -4,6 +4,8 @@ const debug = require('debug')('socket.io-mongo-adapter')
 const msgpack = require('notepack.io')
 const uid2 = require('uid2')
 
+debug.color=39
+
 // TEMP HACK TO REPLACE
 // pub.send_command('pubsub', ['numsub', self.requestChannel]
 const cursorIds = []
@@ -431,7 +433,7 @@ class MongoAdapter extends Adapter {
             if (request.msgCount === cursorIds.length /* request.numsub */ ) {
                clearTimeout(request.timeout)
                if (request.callback) process.nextTick(request.callback.bind(null, null, request.replies))
-               delete self.requests[requestid]
+               delete this.requests[requestid]
             }
 
             break
