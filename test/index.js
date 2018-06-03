@@ -14,14 +14,7 @@ var mongoose = new Mongoose()
 var mockgoose = new Mockgoose(mongoose)
 
 before(function(done) {
-   // this.timeout(30000)
-   mockgoose.prepareStorage().then(function() {
-      // mongoose.connect('mongodb://localhost:27017/TestingDB', done);
-      // mongoose.connection.once('open', () => {
-      //    console.log('Test Mongo connection established') // eslint-disable-line no-console
-      // });
-      done()
-   });
+   mockgoose.prepareStorage().then(done);
 });
 
 [{
