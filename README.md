@@ -12,7 +12,7 @@ npm install @mother/socket.io-adapter-mongo --save
 
 ```js
 const io = require('socket.io')(3000);
-const mongoAdapter = require('socket.io-adapter-mongo');
+const mongoAdapter = require('@mother/socket.io-adapter-mongo');
 io.adapter(mongoAdapter('mongodb://localhost/test'));
 ```
 
