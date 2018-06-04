@@ -1,4 +1,4 @@
-# socket.io-adapter-mongo (WIP)
+# socket.io-adapter-mongo
 
 [![Build Status](https://travis-ci.org/mother/socket.io-adapter-mongo.svg?branch=master)](https://travis-ci.org/mother/socket.io-adapter-mongo)
 
