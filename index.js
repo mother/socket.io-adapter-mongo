@@ -6,10 +6,6 @@ const uid2 = require('uid2')
 
 debug.color=39
 
-// TEMP HACK TO REPLACE
-// pub.send_command('pubsub', ['numsub', self.requestChannel]
-const cursorIds = []
-
 // Request types, for messages between nodes
 const requestTypes = {
    clients: 0,
@@ -30,70 +26,111 @@ class MongoAdapter extends Adapter {
       this.channel = `${this.prefix}#${namespace.name}#`
       this.requestChannel = `${this.prefix}-request#${namespace.name}#`
       this.responseChannel = `${this.prefix}-response#${namespace.name}#`
+      this.heartbeatChannel = `${this.prefix}-heartbeat#${namespace.name}#`
       this.model = options.model
-      this.db = options.db
       this.requests = {}
       this.requestsTimeout = options.requestsTimeout
+      this.heartbeatInterval = options.heartbeatInterval
+      this.nodeIds = {}
       this.customHook = (data, cb) => cb(null)
 
+      let heartbeatInitialized = false
+
       this.model.find({}).sort('-_id').limit(1)
-         .then((docs) => {
-            if (docs.length) {
-               return docs[0]
-            }
+      .then((docs) => {
+         if (docs.length) {
+            return docs[0]
+         }
 
-            return new Promise((resolve, reject) => {
-               this.model.collection.insert({
-                  channel: 'placeholder',
-                  msg: Buffer.from('placeholder')
-               }, {
-                  safe: true
-               }, function(err, docs) {
-                  resolve(docs.ops[0])
-               })
-            })
-         })
-         .then((latestDoc) => {
-            this.cursor = this.model.collection.find({
-               _id: {
-                  $gt: latestDoc._id
-               }
+         return new Promise((resolve, reject) => {
+            this.model.collection.insert({
+               channel: 'placeholder',
+               msg: Buffer.from('placeholder')
             }, {
-               tailable: true,
-               awaitData: true,
-               noCursorTimeout: true,
-               numberOfRetries: -1
+               safe: true
+            }, function(err, docs) {
+               resolve(docs.ops[0])
             })
+         })
+      })
+      .then((latestDoc) => {
+         this.cursor = this.model.collection.find({
+            _id: {
+               $gt: latestDoc._id
+            }
+         }, {
+            tailable: true,
+            awaitData: true,
+            noCursorTimeout: true,
+            numberOfRetries: -1
+         })
 
-            cursorIds.push(this.uid)
+         this.nodeIds[this.uid] = 0
 
-            this.cursor.on('data', (record) => {
-               if (this.channelMatches(record.channel, this.channel)) {
-                  this.onmessage(record)
-               } else if (this.channelMatches(record.channel, this.requestChannel)) {
-                  this.onrequest(record)
-               } else if (this.channelMatches(record.channel, this.responseChannel)) {
-                  this.onresponse(record)
+         this.cursor.on('data', (record) => {
+            if (this.channelMatches(record.channel, this.channel)) {
+               this.onmessage(record)
+            } else if (this.channelMatches(record.channel, this.requestChannel)) {
+               this.onrequest(record)
+            } else if (this.channelMatches(record.channel, this.responseChannel)) {
+               // buffer until we've had a chance to collect receive heartbeat events
+               // from other nodes
+               if (!heartbeatInitialized) {
+                  setTimeout(() => {
+                     heartbeatInitialized = true
+                     this.onresponse(record)
+                  }, this.heartbeatInterval * 2)
                } else {
-                  debug('ignoring unknown channel', record.channel)
+                  this.onresponse(record)
                }
-            })
-
-            this.cursor.on('error', (err) => {
-               this.emit('error', err)
-               this.cursor.destroy()
-            })
-
-            this.cursor.on('end', () => {
-               const index = cursorIds.indexOf(this.uid)
-               if (index !== -1) {
-                  cursorIds.splice(index, 1)
-               }
-            })
+            } else if (this.channelMatches(record.channel, this.heartbeatChannel)) {
+               this.onheartbeat(record)
+            } else {
+               debug('ignoring unknown channel', record.channel)
+            }
          })
-         .catch((err) => {
+
+         this.cursor.on('error', (err) => {
             this.emit('error', err)
+            this.cursor.destroy()
+            clearInterval(this.heartbeatTimer)
          })
+
+         this.cursor.on('end', () => {
+            clearInterval(this.heartbeatTimer)
+            delete this.nodeIds[this.uid]
+         })
+
+         this.heartbeatTimer = setInterval(this.heartbeat.bind(this), this.heartbeatInterval)
+         this.heartbeat()
+      })
+      .catch((err) => {
+         this.emit('error', err)
+      })
+   }
+
+   heartbeat() {
+      if (this.cursor) {
+         this.model.create({
+            channel: this.heartbeatChannel,
+            msg: Buffer.from(this.uid)
+         }, (err) => {
+            if (err) {
+               this.emit('error', err)
+            }
+         })
+      }
+
+      Object.keys(this.nodeIds).forEach((nodeId) => {
+         if (this.nodeIds[nodeId]) {
+            if (this.nodeIds[nodeId] < -2) {
+               delete this.nodeIds[nodeId]
+               debug(`No heartbeat from ${nodeId}, removing now`)
+            } else {
+               this.nodeIds[nodeId] -= 1
+            }
+         }
+      })
    }
 
    disconnect(callback) {
@@ -109,6 +146,21 @@ class MongoAdapter extends Adapter {
 
    channelMatches(messageChannel, subscribedChannel) {
       return messageChannel.startsWith(subscribedChannel)
+   }
+
+   /**
+    * Sync other node ids
+    *
+    * @param {Object} record
+    * @api private
+    */
+
+   onheartbeat(record) {
+      const nodeId = record.msg.toString('utf8')
+      if (!this.nodeIds[nodeId]) {
+         this.nodeIds[nodeId] = 0
+         // debug(`heartbeat: received heartbeat from ${nodeId} on ${this.uid}`)
+      }
    }
 
    /**
@@ -383,7 +435,7 @@ class MongoAdapter extends Adapter {
                request.clients[response.clients[i]] = true
             }
 
-            if (request.msgCount === cursorIds.length /* request.numsub */ ) {
+            if (request.msgCount === Object.keys(this.nodeIds).length /* request.numsub */ ) {
                clearTimeout(request.timeout)
                if (request.callback) process.nextTick(request.callback.bind(null, null, Object.keys(request.clients)))
                delete this.requests[requestid]
@@ -409,7 +461,7 @@ class MongoAdapter extends Adapter {
                request.rooms[response.rooms[i]] = true
             }
 
-            if (request.msgCount === cursorIds.length /* request.numsub */ ) {
+            if (request.msgCount === Object.keys(this.nodeIds).length /* request.numsub */ ) {
                clearTimeout(request.timeout)
                if (request.callback) process.nextTick(request.callback.bind(null, null, Object.keys(request.rooms)))
                delete this.requests[requestid]
@@ -430,7 +482,7 @@ class MongoAdapter extends Adapter {
             request.msgCount++
             request.replies.push(response.data)
 
-            if (request.msgCount === cursorIds.length /* request.numsub */ ) {
+            if (request.msgCount === Object.keys(this.nodeIds).length /* request.numsub */ ) {
                clearTimeout(request.timeout)
                if (request.callback) process.nextTick(request.callback.bind(null, null, request.replies))
                delete this.requests[requestid]
@@ -496,13 +548,7 @@ class MongoAdapter extends Adapter {
 
       const self = this
       const requestid = uid2(6)
-
-      let numsub = cursorIds.length
-      // if (err) {
-      //    this.emit('error', err)
-      //    if (fn) fn(err)
-      //    return
-      // }
+      const numsub = Object.keys(this.nodeIds).length
 
       debug('waiting for %d responses to "clients" request', numsub)
 
@@ -594,14 +640,7 @@ class MongoAdapter extends Adapter {
    allRooms(fn) {
       const self = this
       const requestid = uid2(6)
-
-      let numsub = cursorIds.length
-      // pub.send_command('pubsub', ['numsub', self.requestChannel], function(err, numsub) {
-      //    if (err) {
-      //       self.emit('error', err)
-      //       if (fn) fn(err)
-      //       return
-      //    }
+      const numsub = Object.keys(this.nodeIds).length
 
       debug('waiting for %d responses to "allRooms" request', numsub)
 
@@ -795,14 +834,7 @@ class MongoAdapter extends Adapter {
 
       const self = this
       const requestid = uid2(6)
-
-      const numsub = cursorIds.length
-      // pub.send_command('pubsub', ['numsub', self.requestChannel], function(err, numsub) {
-      //    if (err) {
-      //       self.emit('error', err)
-      //       if (fn) fn(err)
-      //       return
-      //    }
+      const numsub = Object.keys(this.nodeIds).length
 
       debug('waiting for %d responses to "customRequest" request', numsub)
 
@@ -847,16 +879,17 @@ class MongoAdapter extends Adapter {
  */
 
 module.exports = function adapter(uriArg, optionsArg = {}) {
-   const options = typeof uriArg === 'object' ?
-      uriArg :
-      optionsArg
+   const options = typeof uriArg === 'object'
+      ? uriArg
+      : optionsArg
 
-   const uri = typeof uriArg === 'object' ?
-      null :
-      uriArg
+   const uri = typeof uriArg === 'object' && uriArg.uri
+      ? uriArg.uri
+      : uriArg
 
    const prefix = options.key || 'socket.io'
    const requestsTimeout = options.requestsTimeout || 5000
+   const heartbeatInterval = options.heartbeatInterval || 1000
 
    const collectionName = options.collectionName || 'socket.io-message-queue'
    const collectionSize = options.collectionSize || 100000 // 100KB
@@ -883,6 +916,6 @@ module.exports = function adapter(uriArg, optionsArg = {}) {
       model: Message,
       prefix,
       requestsTimeout,
-      db: mongoose.connection.db
+      heartbeatInterval
    })
 }

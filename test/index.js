@@ -20,7 +20,10 @@ before(function(done) {
 
 [{
    name: 'socket.io-mongo-adapter',
-   options: 'mongodb://localhost:27017/TestingDB'
+   options: {
+      uri: 'mongodb://localhost:27017/TestingDB',
+      heartbeatInterval: 20
+   }
 }].forEach(function(suite) {
    var name = suite.name;
    var options = suite.options;
