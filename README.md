@@ -2,6 +2,12 @@
 
 [![Build Status](https://travis-ci.org/mother/socket.io-adapter-mongo.svg?branch=master)](https://travis-ci.org/mother/socket.io-adapter-mongo)
 
+## Installing
+
+```
+npm install @mother/socket.io-adapter-mongo --save
+```
+
 ## How to use
 
 ```js
