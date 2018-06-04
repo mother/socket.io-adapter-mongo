@@ -7,6 +7,15 @@
     "type": "git",
     "url": "git@github.com:mother/socket.io-adapter-mongo.git"
   },
+  "keywords": [
+    "socketio",
+    "socket.io",
+    "mongo",
+    "mongodb",
+    "mongoose",
+    "adapter",
+    "websockets"
+  ],
   "files": [
     "index.js"
   ],
