@@ -4,7 +4,18 @@ const debug = require('debug')('socket.io-mongo-adapter')
 const msgpack = require('notepack.io')
 const uid2 = require('uid2')
 
-const collectionNames = []
+debug.color=39
+
+// Request types, for messages between nodes
+const requestTypes = {
+   clients: 0,
+   clientRooms: 1,
+   allRooms: 2,
+   remoteJoin: 3,
+   remoteLeave: 4,
+   customRequest: 5,
+   remoteDisconnect: 6
+}
 
 class MongoAdapter extends Adapter {
    constructor(options = {}, namespace) {
@@ -13,46 +24,153 @@ class MongoAdapter extends Adapter {
       this.uid = uid2(6)
       this.prefix = options.prefix || 'socket.io'
       this.channel = `${this.prefix}#${namespace.name}#`
+      this.requestChannel = `${this.prefix}-request#${namespace.name}#`
+      this.responseChannel = `${this.prefix}-response#${namespace.name}#`
+      this.heartbeatChannel = `${this.prefix}-heartbeat#${namespace.name}#`
       this.model = options.model
-      // this.requestsTimeout = requestsTimeout
+      this.requests = {}
+      this.requestsTimeout = options.requestsTimeout
+      this.heartbeatInterval = options.heartbeatInterval
+      this.nodeIds = {}
+      this.customHook = (data, cb) => cb(null)
 
-      this.model.count({})
-      .then((count) => {
-         if (count === 0) {
-            return this.model.create({
-               channel: 'placeholder',
-               msg: new Buffer('placeholder')
-            })
+      let heartbeatInitialized = false
+
+      this.model.find({}).sort('-_id').limit(1)
+      .then((docs) => {
+         if (docs.length) {
+            return docs[0]
          }
-      })
-      .then(() => {
-         return this.model.find({}).lean().select('_id').sort({ $natural: -1 }).limit(1)
-         .then(latestDoc => Promise.resolve(latestDoc[0]._id))
-      })
-      .then((latestId) => {
-         const cursor = this.model
-         .find({ _id: { $gt: latestId } })
-         .limit(1)
-         .tailable({ awaitdata: true, numberOfRetries: -1 })
-         .cursor()
 
-         cursor.on('data', this.onmessage.bind(this))
-         cursor.on('error', (err) => {
-            this.emit('error', err)
-            cursor.destroy()
+         return new Promise((resolve, reject) => {
+            this.model.collection.insert({
+               channel: 'placeholder',
+               msg: Buffer.from('placeholder')
+            }, {
+               safe: true
+            }, function(err, docs) {
+               resolve(docs.ops[0])
+            })
          })
       })
-      .catch(err => (
+      .then((latestDoc) => {
+         this.cursor = this.model.collection.find({
+            _id: {
+               $gt: latestDoc._id
+            }
+         }, {
+            tailable: true,
+            awaitData: true,
+            noCursorTimeout: true,
+            numberOfRetries: -1
+         })
+
+         this.nodeIds[this.uid] = 0
+
+         this.cursor.on('data', (record) => {
+            if (this.channelMatches(record.channel, this.channel)) {
+               this.onmessage(record)
+            } else if (this.channelMatches(record.channel, this.requestChannel)) {
+               this.onrequest(record)
+            } else if (this.channelMatches(record.channel, this.responseChannel)) {
+               // buffer until we've had a chance to collect receive heartbeat events
+               // from other nodes
+               if (!heartbeatInitialized) {
+                  setTimeout(() => {
+                     heartbeatInitialized = true
+                     this.onresponse(record)
+                  }, this.heartbeatInterval * 2)
+               } else {
+                  this.onresponse(record)
+               }
+            } else if (this.channelMatches(record.channel, this.heartbeatChannel)) {
+               this.onheartbeat(record)
+            } else {
+               debug('ignoring unknown channel', record.channel)
+            }
+         })
+
+         this.cursor.on('error', (err) => {
+            this.emit('error', err)
+            this.cursor.destroy()
+            clearInterval(this.heartbeatTimer)
+         })
+
+         this.cursor.on('end', () => {
+            clearInterval(this.heartbeatTimer)
+            delete this.nodeIds[this.uid]
+         })
+
+         this.heartbeatTimer = setInterval(this.heartbeat.bind(this), this.heartbeatInterval)
+         this.heartbeat()
+      })
+      .catch((err) => {
          this.emit('error', err)
-      ))
+      })
    }
 
-   channelMatches (messageChannel, subscribedChannel) {
+   heartbeat() {
+      if (this.cursor) {
+         this.model.create({
+            channel: this.heartbeatChannel,
+            msg: Buffer.from(this.uid)
+         }, (err) => {
+            if (err) {
+               this.emit('error', err)
+            }
+         })
+      }
+
+      Object.keys(this.nodeIds).forEach((nodeId) => {
+         if (this.nodeIds[nodeId]) {
+            if (this.nodeIds[nodeId] < -2) {
+               delete this.nodeIds[nodeId]
+               debug(`No heartbeat from ${nodeId}, removing now`)
+            } else {
+               this.nodeIds[nodeId] -= 1
+            }
+         }
+      })
+   }
+
+   disconnect(callback) {
+      this.cursor.close((err) => {
+         if (err) return callback(err)
+         this.model.db.close((connectionErr) => {
+            if (typeof callback === 'function') {
+               callback(connectionErr)
+            }
+         })
+      })
+   }
+
+   channelMatches(messageChannel, subscribedChannel) {
       return messageChannel.startsWith(subscribedChannel)
    }
 
-   // Private
-   onmessage (record) {
+   /**
+    * Sync other node ids
+    *
+    * @param {Object} record
+    * @api private
+    */
+
+   onheartbeat(record) {
+      const nodeId = record.msg.toString('utf8')
+      if (!this.nodeIds[nodeId]) {
+         this.nodeIds[nodeId] = 0
+         // debug(`heartbeat: received heartbeat from ${nodeId} on ${this.uid}`)
+      }
+   }
+
+   /**
+    * Called with a subscription message
+    *
+    * @param {Object} record
+    * @api private
+    */
+
+   onmessage(record) {
       const channel = record.channel
       if (!this.channelMatches(channel, this.channel)) {
          return debug('ignore different channel')
@@ -64,7 +182,7 @@ class MongoAdapter extends Adapter {
       }
 
       const msg = record.msg
-      const args = msgpack.decode(msg)
+      const args = msgpack.decode(msg.buffer)
 
       if (this.uid === args.shift()) {
          return debug('ignore same uid')
@@ -86,6 +204,300 @@ class MongoAdapter extends Adapter {
    }
 
    /**
+    * Called on request from another node
+    *
+    * @param {Object} record
+    * @api private
+    */
+
+   onrequest(record) {
+      const channel = record.channel
+      const msg = record.msg
+
+      let request = null
+      try {
+         request = JSON.parse(msg)
+      } catch (err) {
+         this.emit('error', err)
+         return
+      }
+
+      debug('received request %j', request, 'on', this.uid)
+
+      switch (request.type) {
+         case requestTypes.clients: {
+            super.clients(request.rooms, (err, clients) => {
+               if (err) {
+                  this.emit('error', err)
+                  return
+               }
+
+               const response = JSON.stringify({
+                  requestid: request.requestid,
+                  clients: clients
+               })
+
+               this.model.create({
+                  channel: this.responseChannel,
+                  msg: Buffer.from(response)
+               }, (err) => {
+                  if (err) {
+                     this.emit('error', err)
+                  }
+               })
+            })
+
+            break
+         }
+
+         case requestTypes.clientRooms: {
+            super.clientRooms(request.sid, (err, rooms) => {
+               if (err) {
+                  this.emit('error', err)
+                  return
+               }
+
+               if (!rooms) {
+                  return
+               }
+
+               const response = JSON.stringify({
+                  requestid: request.requestid,
+                  rooms: rooms
+               })
+
+               this.model.create({
+                  channel: this.responseChannel,
+                  msg: Buffer.from(response)
+               }, (err) => {
+                  if (err) {
+                     this.emit('error', err)
+                  }
+               })
+            })
+
+            break
+         }
+
+         case requestTypes.allRooms: {
+            const response = JSON.stringify({
+               requestid: request.requestid,
+               rooms: Object.keys(this.rooms)
+            })
+
+            this.model.create({
+               channel: this.responseChannel,
+               msg: Buffer.from(response)
+            }, (err) => {
+               if (err) {
+                  this.emit('error', err)
+               }
+            })
+
+            break
+         }
+
+         case requestTypes.remoteJoin: {
+            const socket = this.nsp.connected[request.sid]
+            if (!socket) {
+               return
+            }
+
+            socket.join(request.room, () => {
+               const response = JSON.stringify({
+                  requestid: request.requestid
+               })
+
+               this.model.create({
+                  channel: this.responseChannel,
+                  msg: Buffer.from(response)
+               }, (err) => {
+                  if (err) {
+                     this.emit('error', err)
+                  }
+               })
+            })
+
+            break
+         }
+
+         case requestTypes.remoteLeave: {
+            const socket = this.nsp.connected[request.sid]
+            if (!socket) {
+               return
+            }
+
+            socket.leave(request.room, () => {
+               const response = JSON.stringify({
+                  requestid: request.requestid
+               })
+
+               this.model.create({
+                  channel: this.responseChannel,
+                  msg: Buffer.from(response)
+               }, (err) => {
+                  if (err) {
+                     this.emit('error', err)
+                  }
+               })
+            })
+
+            break
+         }
+
+         case requestTypes.remoteDisconnect: {
+            const socket = this.nsp.connected[request.sid]
+            if (!socket) {
+               return
+            }
+
+            socket.disconnect(request.close)
+
+            const response = JSON.stringify({
+               requestid: request.requestid
+            })
+
+            this.model.create({
+               channel: this.responseChannel,
+               msg: Buffer.from(response)
+            }, (err) => {
+               if (err) {
+                  this.emit('error', err)
+               }
+            })
+
+            break
+         }
+
+         case requestTypes.customRequest: {
+            this.customHook(request.data, (data) => {
+               const response = JSON.stringify({
+                  requestid: request.requestid,
+                  data: data
+               })
+
+               this.model.create({
+                  channel: this.responseChannel,
+                  msg: Buffer.from(response)
+               }, (err) => {
+                  if (err) {
+                     this.emit('error', err)
+                  }
+               })
+            })
+
+            break
+         }
+
+         default: {
+            debug('ignoring unknown request type: %s', request.type)
+         }
+      }
+   }
+
+   /**
+    * Called on response from another node
+    *
+    * @param {Object} record
+    * @api private
+    */
+
+   onresponse(record) {
+      const channel = record.channel
+      const msg = record.msg
+
+      let response = null
+      try {
+         response = JSON.parse(msg)
+      } catch (err) {
+         this.emit('error', err)
+         return
+      }
+
+      const requestid = response.requestid
+      if (!requestid || !this.requests[requestid]) {
+         debug('ignoring response with unknown request %j', response)
+         return
+      }
+
+      debug('received response %j', response)
+
+      const request = this.requests[requestid]
+
+      switch (request.type) {
+         case requestTypes.clients: {
+            request.msgCount++
+
+            // ignore if response does not contain 'clients' key
+            if (!response.clients || !Array.isArray(response.clients)) return
+
+            for (let i = 0; i < response.clients.length; i++) {
+               request.clients[response.clients[i]] = true
+            }
+
+            if (request.msgCount === Object.keys(this.nodeIds).length /* request.numsub */ ) {
+               clearTimeout(request.timeout)
+               if (request.callback) process.nextTick(request.callback.bind(null, null, Object.keys(request.clients)))
+               delete this.requests[requestid]
+            }
+
+            break
+         }
+
+         case requestTypes.clientRooms: {
+            clearTimeout(request.timeout)
+            if (request.callback) process.nextTick(request.callback.bind(null, null, response.rooms))
+            delete this.requests[requestid]
+            break
+         }
+
+         case requestTypes.allRooms: {
+            request.msgCount++
+
+            // ignore if response does not contain 'rooms' key
+            if (!response.rooms || !Array.isArray(response.rooms)) return
+
+            for (let i = 0; i < response.rooms.length; i++) {
+               request.rooms[response.rooms[i]] = true
+            }
+
+            if (request.msgCount === Object.keys(this.nodeIds).length /* request.numsub */ ) {
+               clearTimeout(request.timeout)
+               if (request.callback) process.nextTick(request.callback.bind(null, null, Object.keys(request.rooms)))
+               delete this.requests[requestid]
+            }
+
+            break
+         }
+
+         case requestTypes.remoteJoin:
+         case requestTypes.remoteLeave:
+         case requestTypes.remoteDisconnect:
+            clearTimeout(request.timeout)
+            if (request.callback) process.nextTick(request.callback.bind(null, null))
+            delete this.requests[requestid]
+            break
+
+         case requestTypes.customRequest: {
+            request.msgCount++
+            request.replies.push(response.data)
+
+            if (request.msgCount === Object.keys(this.nodeIds).length /* request.numsub */ ) {
+               clearTimeout(request.timeout)
+               if (request.callback) process.nextTick(request.callback.bind(null, null, request.replies))
+               delete this.requests[requestid]
+            }
+
+            break
+         }
+
+         default: {
+            debug('ignoring unknown request type: %s', request.type)
+         }
+      }
+   }
+
+   /**
     * Broadcasts a packet.
     *
     * @param {Object} packet to emit
@@ -94,9 +506,8 @@ class MongoAdapter extends Adapter {
     * @api public
     */
 
-   broadcast (packet, opts, remote) {
+   broadcast(packet, opts, remote) {
       packet.nsp = this.nsp.name
-
       if (!(remote || (opts && opts.flags && opts.flags.local))) {
          const msg = msgpack.encode([this.uid, packet, opts])
          let channel = this.channel
@@ -106,9 +517,12 @@ class MongoAdapter extends Adapter {
          }
 
          debug('publishing message to channel %s', channel)
-         this.model.create({ channel, msg }, (err) => {
+         this.model.create({
+            channel,
+            msg
+         }, (err) => {
             if (err) {
-               debug('Error creating message', err)
+               this.emit('error', err)
             }
          })
       }
@@ -124,8 +538,50 @@ class MongoAdapter extends Adapter {
     * @api public
     */
 
-   clients (rooms, fn) {
+   clients(rooms, fn) {
+      if (typeof rooms === 'function') {
+         fn = rooms
+         rooms = null
+      }
 
+      rooms = rooms || []
+
+      const self = this
+      const requestid = uid2(6)
+      const numsub = Object.keys(this.nodeIds).length
+
+      debug('waiting for %d responses to "clients" request', numsub)
+
+      const request = JSON.stringify({
+         requestid: requestid,
+         type: requestTypes.clients,
+         rooms: rooms
+      })
+
+      // if there is no response for x second, return result
+      const timeout = setTimeout(function() {
+         const request = self.requests[requestid]
+         if (fn) process.nextTick(fn.bind(null, new Error('timeout reached while waiting for clients response'), Object.keys(request.clients)))
+         delete self.requests[requestid]
+      }, self.requestsTimeout)
+
+      self.requests[requestid] = {
+         type: requestTypes.clients,
+         numsub: numsub,
+         msgCount: 0,
+         clients: {},
+         callback: fn,
+         timeout: timeout
+      }
+
+      this.model.create({
+         channel: this.requestChannel,
+         msg: Buffer.from(request)
+      }, (err) => {
+         if (err) {
+            this.emit('error', err)
+         }
+      })
    }
 
    /**
@@ -136,8 +592,42 @@ class MongoAdapter extends Adapter {
     * @api public
     */
 
-   clientRooms (id, fn) {
+   clientRooms(id, fn) {
+      const self = this
+      const requestid = uid2(6)
+      const rooms = this.sids[id]
 
+      if (rooms) {
+         if (fn) process.nextTick(fn.bind(null, null, Object.keys(rooms)))
+         return
+      }
+
+      const request = JSON.stringify({
+         requestid: requestid,
+         type: requestTypes.clientRooms,
+         sid: id
+      })
+
+      // if there is no response for x second, return result
+      const timeout = setTimeout(function() {
+         if (fn) process.nextTick(fn.bind(null, new Error('timeout reached while waiting for rooms response')))
+         delete self.requests[requestid]
+      }, self.requestsTimeout)
+
+      this.requests[requestid] = {
+         type: requestTypes.clientRooms,
+         callback: fn,
+         timeout: timeout
+      }
+
+      this.model.create({
+         channel: this.requestChannel,
+         msg: Buffer.from(request)
+      }, (err) => {
+         if (err) {
+            this.emit('error', err)
+         }
+      })
    }
 
    /**
@@ -147,8 +637,42 @@ class MongoAdapter extends Adapter {
     * @api public
     */
 
-   allRooms (fn) {
+   allRooms(fn) {
+      const self = this
+      const requestid = uid2(6)
+      const numsub = Object.keys(this.nodeIds).length
 
+      debug('waiting for %d responses to "allRooms" request', numsub)
+
+      const request = JSON.stringify({
+         requestid: requestid,
+         type: requestTypes.allRooms
+      })
+
+      // if there is no response for x second, return result
+      const timeout = setTimeout(function() {
+         const request = self.requests[requestid]
+         if (fn) process.nextTick(fn.bind(null, new Error('timeout reached while waiting for allRooms response'), Object.keys(request.rooms)))
+         delete self.requests[requestid]
+      }, self.requestsTimeout)
+
+      self.requests[requestid] = {
+         type: requestTypes.allRooms,
+         numsub: numsub,
+         msgCount: 0,
+         rooms: {},
+         callback: fn,
+         timeout: timeout
+      }
+
+      this.model.create({
+         channel: this.requestChannel,
+         msg: Buffer.from(request)
+      }, (err) => {
+         if (err) {
+            this.emit('error', err)
+         }
+      })
    }
 
    /**
@@ -160,8 +684,43 @@ class MongoAdapter extends Adapter {
     * @api public
     */
 
-   remoteJoin (id, room, fn) {
+   remoteJoin(id, room, fn) {
+      const self = this
+      const requestid = uid2(6)
 
+      const socket = this.nsp.connected[id]
+      if (socket) {
+         socket.join(room, fn)
+         return
+      }
+
+      const request = JSON.stringify({
+         requestid: requestid,
+         type: requestTypes.remoteJoin,
+         sid: id,
+         room: room
+      })
+
+      // if there is no response for x second, return result
+      const timeout = setTimeout(function() {
+         if (fn) process.nextTick(fn.bind(null, new Error('timeout reached while waiting for remoteJoin response')))
+         delete self.requests[requestid]
+      }, self.requestsTimeout)
+
+      self.requests[requestid] = {
+         type: requestTypes.remoteJoin,
+         callback: fn,
+         timeout: timeout
+      }
+
+      this.model.create({
+         channel: this.requestChannel,
+         msg: Buffer.from(request)
+      }, (err) => {
+         if (err) {
+            this.emit('error', err)
+         }
+      })
    }
 
    /**
@@ -173,8 +732,42 @@ class MongoAdapter extends Adapter {
     * @api public
     */
 
-   remoteLeave (id, room, fn) {
+   remoteLeave(id, room, fn) {
+      const self = this
+      const requestid = uid2(6)
+      const socket = this.nsp.connected[id]
+      if (socket) {
+         socket.leave(room, fn)
+         return
+      }
 
+      const request = JSON.stringify({
+         requestid: requestid,
+         type: requestTypes.remoteLeave,
+         sid: id,
+         room: room
+      })
+
+      // if there is no response for x second, return result
+      const timeout = setTimeout(function() {
+         if (fn) process.nextTick(fn.bind(null, new Error('timeout reached while waiting for remoteLeave response')))
+         delete self.requests[requestid]
+      }, self.requestsTimeout)
+
+      self.requests[requestid] = {
+         type: requestTypes.remoteLeave,
+         callback: fn,
+         timeout: timeout
+      }
+
+      this.model.create({
+         channel: this.requestChannel,
+         msg: Buffer.from(request)
+      }, (err) => {
+         if (err) {
+            this.emit('error', err)
+         }
+      })
    }
 
    /**
@@ -185,8 +778,44 @@ class MongoAdapter extends Adapter {
     * @api public
     */
 
-   remoteDisconnect (id, close, fn) {
+   remoteDisconnect(id, close, fn) {
+      const self = this
+      const requestid = uid2(6)
 
+      const socket = this.nsp.connected[id]
+      if (socket) {
+         socket.disconnect(close)
+         if (fn) process.nextTick(fn.bind(null, null))
+         return
+      }
+
+      const request = JSON.stringify({
+         requestid: requestid,
+         type: requestTypes.remoteDisconnect,
+         sid: id,
+         close: close
+      })
+
+      // if there is no response for x second, return result
+      const timeout = setTimeout(function() {
+         if (fn) process.nextTick(fn.bind(null, new Error('timeout reached while waiting for remoteDisconnect response')))
+         delete self.requests[requestid]
+      }, self.requestsTimeout)
+
+      this.requests[requestid] = {
+         type: requestTypes.remoteDisconnect,
+         callback: fn,
+         timeout: timeout
+      }
+
+      this.model.create({
+         channel: this.requestChannel,
+         msg: Buffer.from(request)
+      }, (err) => {
+         if (err) {
+            this.emit('error', err)
+         }
+      })
    }
 
    /**
@@ -197,8 +826,48 @@ class MongoAdapter extends Adapter {
     * @api public
     */
 
-   customRequest (data, fn) {
+   customRequest(data, fn) {
+      if (typeof data === 'function') {
+         fn = data
+         data = null
+      }
 
+      const self = this
+      const requestid = uid2(6)
+      const numsub = Object.keys(this.nodeIds).length
+
+      debug('waiting for %d responses to "customRequest" request', numsub)
+
+      const request = JSON.stringify({
+         requestid: requestid,
+         type: requestTypes.customRequest,
+         data: data
+      })
+
+      // if there is no response for x second, return result
+      const timeout = setTimeout(function() {
+         const request = self.requests[requestid]
+         if (fn) process.nextTick(fn.bind(null, new Error('timeout reached while waiting for customRequest response'), request.replies))
+         delete self.requests[requestid]
+      }, self.requestsTimeout)
+
+      self.requests[requestid] = {
+         type: requestTypes.customRequest,
+         numsub: numsub,
+         msgCount: 0,
+         replies: [],
+         callback: fn,
+         timeout: timeout
+      }
+
+      this.model.create({
+         channel: this.requestChannel,
+         msg: Buffer.from(request)
+      }, (err) => {
+         if (err) {
+            this.emit('error', err)
+         }
+      })
    }
 }
 
@@ -208,37 +877,45 @@ class MongoAdapter extends Adapter {
  * @return {MongoAdapter} adapter
  * @api public
  */
+
 module.exports = function adapter(uriArg, optionsArg = {}) {
    const options = typeof uriArg === 'object'
       ? uriArg
       : optionsArg
 
-   const uri = typeof uriArg === 'object'
-      ? null
+   const uri = typeof uriArg === 'object' && uriArg.uri
+      ? uriArg.uri
       : uriArg
 
    const prefix = options.key || 'socket.io'
    const requestsTimeout = options.requestsTimeout || 5000
+   const heartbeatInterval = options.heartbeatInterval || 1000
 
    const collectionName = options.collectionName || 'socket.io-message-queue'
-   const collectionSize = options.collectionSize || 1000000 // 1MB
-   const mongoose = options.mongoose || new Mongoose().connect(uri)
+   const collectionSize = options.collectionSize || 100000 // 100KB
+   const mongoose = options.mongoose || new Mongoose()
+   if (!options.mongoose && uri) {
+      mongoose.connect(uri)
+   }
 
+   // mongoose.set('debug', true)
    // Message Schema & Model
    let Message
-   if (collectionNames.includes(collectionName)) {
+   if (mongoose.modelNames().includes(collectionName)) {
       Message = mongoose.model(collectionName)
    } else {
       const messageSchema = new mongoose.Schema({
          channel: { type: String, trim: true },
          msg: { type: Buffer }
-      }, {
-         capped: collectionSize
-      })
+      }, { capped: collectionSize })
 
       Message = mongoose.model(collectionName, messageSchema)
-      collectionNames.push(collectionName)
    }
 
-   return MongoAdapter.bind(null, { model: Message, prefix })
+   return MongoAdapter.bind(null, {
+      model: Message,
+      prefix,
+      requestsTimeout,
+      heartbeatInterval
+   })
 }
