@@ -1,11 +1,11 @@
 {
-  "name": "socket.io-adapter-mongo",
+  "name": "@mother/socket.io-adapter-mongo",
   "version": "0.0.3",
   "description": "socket.io adapter for MongoDB",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git@github.com:mother/socket.io-adapter-mongo.git"
+    "url": "git+ssh://git@github.com/mother/socket.io-adapter-mongo.git"
   },
   "keywords": [
     "socketio",
@@ -35,5 +35,14 @@
     "mockgoose": "7.3.3",
     "socket.io": "2.1.0",
     "socket.io-client": "2.1.0"
-  }
+  },
+  "bugs": {
+    "url": "https://github.com/mother/socket.io-adapter-mongo/issues"
+  },
+  "homepage": "https://github.com/mother/socket.io-adapter-mongo#readme",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "author": ""
 }
