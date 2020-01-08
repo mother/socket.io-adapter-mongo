@@ -895,7 +895,7 @@ module.exports = function adapter(uriArg, optionsArg = {}) {
    const collectionSize = options.collectionSize || 100000 // 100KB
    const mongoose = options.mongoose || new Mongoose()
    if (!options.mongoose && uri) {
-      mongoose.connect(uri)
+      mongoose.connect(uri, {useNewUrlParser: true, useUnifiedTopology: true})
    }
 
    // mongoose.set('debug', true)
