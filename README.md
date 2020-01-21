@@ -64,7 +64,6 @@ The following options are passed to Mongoose by default:
 
 - `useNewUrlParser`: true
 - `useUnifiedTopology`: true
-- `autoReconnect`: true
 
 If you want to override these options, just include them in `mOptions`.
 

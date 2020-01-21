@@ -891,15 +891,13 @@ module.exports = function adapter(uriArg, optionsArg = {}) {
       ? Object.assign(
          {
             useNewUrlParser: true,
-            useUnifiedTopology: true,
-            autoReconnect: true
+            useUnifiedTopology: true
          },
          options.mOptions
       )
       : {
          useNewUrlParser: true,
-         useUnifiedTopology: true,
-         autoReconnect: true
+         useUnifiedTopology: true
       }
    const prefix = options.key || 'socket.io'
    const requestsTimeout = options.requestsTimeout || 5000
