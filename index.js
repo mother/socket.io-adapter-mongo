@@ -887,6 +887,20 @@ module.exports = function adapter(uriArg, optionsArg = {}) {
       ? uriArg.uri
       : uriArg
 
+   const mongooseOptions = typeof options === 'object' && options.mOptions
+      ? Object.assign(
+         {
+            useNewUrlParser: true,
+            useUnifiedTopology: true,
+            autoReconnect: true
+         },
+         options.mOptions
+      )
+      : {
+         useNewUrlParser: true,
+         useUnifiedTopology: true,
+         autoReconnect: true
+      }
    const prefix = options.key || 'socket.io'
    const requestsTimeout = options.requestsTimeout || 5000
    const heartbeatInterval = options.heartbeatInterval || 1000
@@ -895,7 +909,7 @@ module.exports = function adapter(uriArg, optionsArg = {}) {
    const collectionSize = options.collectionSize || 100000 // 100KB
    const mongoose = options.mongoose || new Mongoose()
    if (!options.mongoose && uri) {
-      mongoose.connect(uri, {useNewUrlParser: true, useUnifiedTopology: true})
+      mongoose.connect(uri, mongooseOptions)
    }
 
    // mongoose.set('debug', true)
