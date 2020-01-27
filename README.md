@@ -16,18 +16,19 @@ const mongoAdapter = require('@mother/socket.io-adapter-mongo');
 io.adapter(mongoAdapter('mongodb://localhost/test'));
 ```
 
-or pass an object
+or pass an object:
 
 ```js
-const io = require("socket.io")(3000);
-const mongoAdapter = require("@mother/socket.io-adapter-mongo");
+const io = require('socket.io')(3000);
+const mongoAdapter = require('@mother/socket.io-adapter-mongo');
+
 io.adapter(mongoAdapter({
-	uri: "mongodb://localhost/test",
-	key: "socket.io",
+	uri: 'mongodb://localhost/test',
+	key: 'socket.io',
 	mOptions: {
 		tls: true
 	}
-	}));
+}));
 ```
 
 By running socket.io with the `socket.io-adapter-mongo` adapter you can run

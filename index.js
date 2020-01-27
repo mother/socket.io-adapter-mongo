@@ -887,18 +887,15 @@ module.exports = function adapter(uriArg, optionsArg = {}) {
       ? uriArg.uri
       : uriArg
 
+   const defaultMongooseOptions = {
+      useNewUrlParser: true,
+      useUnifiedTopology: true
+   }
+
    const mongooseOptions = typeof options === 'object' && options.mOptions
-      ? Object.assign(
-         {
-            useNewUrlParser: true,
-            useUnifiedTopology: true
-         },
-         options.mOptions
-      )
-      : {
-         useNewUrlParser: true,
-         useUnifiedTopology: true
-      }
+      ? Object.assign(defaultMongooseOptions, options.mOptions)
+      : defaultMongooseOptions
+
    const prefix = options.key || 'socket.io'
    const requestsTimeout = options.requestsTimeout || 5000
    const heartbeatInterval = options.heartbeatInterval || 1000
