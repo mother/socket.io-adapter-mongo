@@ -43,7 +43,12 @@ class MongoAdapter extends Adapter {
          }
 
          return new Promise((resolve, reject) => {
-            this.model.collection.insert({
+            let insertMethod = this.model.collection.insertOne
+            // insert is depricated but is keept for backwards compatibility
+            if(!insertMethod) {
+               insertMethod = this.model.collection.insert
+            }
+            insertMethod({
                channel: 'placeholder',
                msg: Buffer.from('placeholder')
             }, {
