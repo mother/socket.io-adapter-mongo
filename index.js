@@ -44,10 +44,11 @@ class MongoAdapter extends Adapter {
 
          return new Promise((resolve, reject) => {
             let insertMethod = this.model.collection.insertOne
-            // insert is depricated but is keept for backwards compatibility
-            if(!insertMethod) {
+            // insert is deprecated but is keept for backwards compatibility
+            if (!insertMethod) {
                insertMethod = this.model.collection.insert
             }
+
             insertMethod({
                channel: 'placeholder',
                msg: Buffer.from('placeholder')
@@ -139,14 +140,18 @@ class MongoAdapter extends Adapter {
    }
 
    disconnect(callback) {
-      this.cursor.close((err) => {
-         if (err) return callback(err)
-         this.model.db.close((connectionErr) => {
-            if (typeof callback === 'function') {
-               callback(connectionErr)
-            }
+      if (this.cursor) {
+         this.cursor.close((err) => {
+            if (err) return callback(err)
+            this.model.db.close((connectionErr) => {
+               if (typeof callback === 'function') {
+                  callback(connectionErr)
+               }
+            })
          })
-      })
+      } else {
+         callback()
+      }
    }
 
    channelMatches(messageChannel, subscribedChannel) {

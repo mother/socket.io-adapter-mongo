@@ -15,7 +15,9 @@ var mockgoose = new Mockgoose(mongoose)
 
 before(function(done) {
    this.timeout(60000)
-   mockgoose.prepareStorage().then(done);
+   mockgoose.prepareStorage().then(() => {
+      setTimeout(done, 500)
+   });
 });
 
 [{
@@ -29,7 +31,6 @@ before(function(done) {
    var options = suite.options;
 
    describe(name, function() {
-
       beforeEach(init(options));
       afterEach(cleanup);
 
@@ -44,7 +45,7 @@ before(function(done) {
             done();
          });
 
-         var buf = new Buffer('asdfasdf', 'utf8');
+         var buf = Buffer.from('asdfasdf', 'utf8');
          var array = Uint8Array.of(1, 2, 3, 4);
          socket2.broadcast.emit('woot', [], {
             a: 'b'
