@@ -32,7 +32,7 @@
   "devDependencies": {
     "expect.js": "~0.3.1",
     "mocha": "~3.4.2",
-    "mockgoose": "~7.3.3",
+    "mockgoose": "^7.3.5",
     "socket.io": "^2.4.1",
     "socket.io-client": "^2.4.0"
   },

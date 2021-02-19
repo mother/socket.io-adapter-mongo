@@ -14,7 +14,7 @@ var mongoose = new Mongoose()
 var mockgoose = new Mockgoose(mongoose)
 
 before(function(done) {
-   this.timeout(60000)
+   this.timeout(120000)
    mockgoose.prepareStorage().then(() => {
       setTimeout(done, 500)
    });
